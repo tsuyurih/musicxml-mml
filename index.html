@@ -1,20 +1,28 @@
 <!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MusicXML → MML 左右分離</title>
 <style>body{font:15px -apple-system,BlinkMacSystemFont,sans-serif;background:#f6f7fb;color:#202633;max-width:940px;margin:25px auto;padding:0 15px}h1{font-size:24px}section{background:white;border:1px solid #d9dce4;border-radius:12px;padding:18px;margin:14px 0}button{background:#234e89;color:white;border:0;border-radius:8px;padding:11px 15px;cursor:pointer;margin:4px}button:disabled{opacity:.4}textarea{width:100%;height:175px;box-sizing:border-box;font:12px/1.5 monospace;border:1px solid #ccd0da;border-radius:7px;padding:10px}small,.muted{color:#596477}#status{white-space:pre-wrap;line-height:1.6} .error{color:#b12d2d}.ok{color:#116638} .warning{color:#9c5600}</style>
-<h1>MusicXML → MML（Mac用・自動照合 v5）</h1><p>楽譜の上段＝右手、下段＝左手。ファイルはブラウザ内で処理します。</p>
+<h1>MusicXML → MML（自動照合 v7・左右連動音量）</h1><p>楽譜の上段＝右手、下段＝左手。ファイルはブラウザ内で処理します。</p>
 <section><label><strong>① MusicXMLを選択</strong> <input id="file" type="file" accept=".musicxml,.xml,text/xml,application/xml"></label><p><button id="convert">② 変換する</button></p><div id="status" aria-live="polite">ファイルを選択してください。</div></section>
 <section><h3>Track A：右手（staff 1） <span id="countA"></span></h3><textarea id="outA" readonly></textarea><button data-copy="A">コピー</button><button data-save="A">TXT保存</button></section>
 <section><h3>Track B：左手（staff 2） <span id="countB"></span></h3><textarea id="outB" readonly></textarea><button data-copy="B">コピー</button><button data-save="B">TXT保存</button></section>
 <section><h3>両トラックをまとめてコピー</h3><p class="muted">Track AとTrack Bをラベル付きでまとめてコピーします。ゲームへは各トラックを個別に貼り付けてください。</p><button id="copyBoth">A・Bを一括コピー</button><button id="saveBoth">A・BをまとめてTXT保存</button><p id="copyMessage" aria-live="polite"></p><textarea id="combined" readonly placeholder="変換後、ここにA・Bをまとめて表示します"></textarea></section>
-<section><strong>重要な注意</strong><p class="muted">音符・休符は各1音として数え、:・&amp;・オクターブ・テンポ記号は数えません。3000音超過または自動照合で不一致のトラックは出力しません。発音時刻を合わせるための分割によって音数が増える場合があります。複雑な重なりの : と &amp; の解釈はゲーム側で未検証です。連符などの端点は表現可能な1/64拍単位に丸めて誤差を表示します。アルペジオ、反復記号、装飾音符、途中テンポ変更などは未対応です。まず16小節で確認してください。</p></section>
+<section><strong>重要な注意</strong><p class="muted">音符・休符は各1音として数え、:・&amp;・オクターブ・テンポ記号は数えません。3000音超過または自動照合で不一致のトラックは出力しません。発音時刻を合わせるための分割によって音数が増える場合があります。複雑な重なりの : と &amp; の解釈はゲーム側で未検証です。連符などの端点は表現可能な1/64拍単位に丸めて誤差を表示します。右手の強弱記号は左手の独立した強弱記号が始まるまでは右手の強弱を左手へ反映（音量-2）し、左手に指定があればその後は左手独自の強弱を優先します。クレッシェンド/デクレッシェンドの線、アルペジオ、反復記号、装飾音符、途中テンポ変更などは未対応です。まず16小節で確認してください。</p></section>
 <script>
 'use strict';const $=id=>document.getElementById(id), EPS=1e-7;
+const DYNAMIC_V={ppp:2,pp:4,p:6,mp:8,mf:10,f:12,ff:14,fff:15};
 const noteNames=['c','c+','d','d+','e','f','f+','g','g+','a','a+','b'];const semis={C:0,D:2,E:4,F:5,G:7,A:9,B:11};
 function child(e,name){return [...e.children].find(x=>x.localName===name)||null}function children(e,name){return [...e.children].filter(x=>x.localName===name)}function val(e,name,d=''){return child(e,name)?.textContent?.trim()??d}
 function fail(s){throw Error(s)}function keyMap(f){let m={C:0,D:0,E:0,F:0,G:0,A:0,B:0};let sharp=['F','C','G','D','A','E','B'],flat=['B','E','A','D','G','C','F'];for(let i=0;i<Math.abs(f)&&i<7;i++)m[(f>0?sharp:flat)[i]]=f>0?1:-1;return m}
-function parse(xml){let doc=new DOMParser().parseFromString(xml,'application/xml');if(doc.querySelector('parsererror'))fail('XMLの構文を読み取れません');let root=doc.documentElement;if(root.localName!=='score-partwise')fail('score-partwise形式のMusicXMLに対応しています');let parts=children(root,'part');if(parts.length!==1)fail('現在は1楽器（ピアノ2段譜）のMusicXMLのみ対応しています。楽器数：'+parts.length);let measures=children(parts[0],'measure');let div=1,signature=keyMap(0),clock=0,events={1:[],2:[]},tempos=[],warnings=[],ties=new Map();let staves=1;
+function parse(xml){let doc=new DOMParser().parseFromString(xml,'application/xml');if(doc.querySelector('parsererror'))fail('XMLの構文を読み取れません');let root=doc.documentElement;if(root.localName!=='score-partwise')fail('score-partwise形式のMusicXMLに対応しています');let parts=children(root,'part');if(parts.length!==1)fail('現在は1楽器（ピアノ2段譜）のMusicXMLのみ対応しています。楽器数：'+parts.length);let measures=children(parts[0],'measure');let div=1,signature=keyMap(0),clock=0,events={1:[],2:[]},tempos=[],dynamics={1:[],2:[]},warnings=[],ties=new Map();let staves=1;
 for(let mi=0;mi<measures.length;mi++){let measure=measures[mi],cursor=0,max=0,lastOnset=0,accidental={};for(let el of [...measure.children]){let tag=el.localName;
 if(tag==='attributes'){if(child(el,'divisions'))div=+val(el,'divisions');if(!div)fail('divisionsが不正');if(child(el,'key'))signature=keyMap(+(val(child(el,'key'),'fifths','0')));if(child(el,'staves'))staves=+val(el,'staves');continue}
-if(tag==='direction'){let sound=child(el,'sound');if(sound?.hasAttribute('tempo'))tempos.push({at:clock+cursor,tempo:+sound.getAttribute('tempo')});continue}
+if(tag==='direction'){
+ let sound=child(el,'sound');if(sound?.hasAttribute('tempo'))tempos.push({at:clock+cursor,tempo:+sound.getAttribute('tempo')});
+ let staff=+(val(el,'staff','1'));let dt=children(el,'direction-type');let marks=dt.flatMap(d=>children(d,'dynamics')).flatMap(d=>[...d.children].map(n=>n.localName));
+ if(dt.some(d=>children(d,'wedge').length))warnings.push((mi+1)+'小節：クレッシェンド/デクレッシェンドの線は未対応（段階的音量変化なし）');
+ if(marks.length){let mark=marks[0];if(DYNAMIC_V[mark]!==undefined){if(dynamics[staff])dynamics[staff].push({at:clock+cursor,value:DYNAMIC_V[mark],mark});else warnings.push((mi+1)+'小節：音量指定のstaffが不正')}else warnings.push((mi+1)+'小節：未対応の強弱記号 '+mark)}
+ else if(sound?.hasAttribute('dynamics')){let d=+sound.getAttribute('dynamics');if(Number.isFinite(d)&&d>=0&&dynamics[staff])dynamics[staff].push({at:clock+cursor,value:Math.max(0,Math.min(15,Math.round(d/100*12))),mark:'数値音量'});}
+ continue}
+
 if(tag==='sound'){if(el.hasAttribute('tempo'))tempos.push({at:clock+cursor,tempo:+el.getAttribute('tempo')});continue}
 if(tag==='backup'||tag==='forward'){let d=+(val(el,'duration','0'))/div;cursor+=tag==='backup'?-d:d;if(cursor < -EPS)fail((mi+1)+'小節：backupが小節の先頭を超えています');max=Math.max(max,cursor);continue}
 if(tag!=='note')continue;
@@ -28,7 +36,7 @@ if(tieEls.includes('stop')){let previous=ties.get(key);if(!previous||Math.abs(pr
 }
 if(max<EPS)warnings.push((mi+1)+'小節：長さを判断できません');clock+=max;
 }
-if(ties.size)fail('終了していないタイがあります');if(staves<2)fail('左右2段の楽譜ではありません');let tempo=tempos[0]?.tempo??120;if(tempos.some(t=>t.tempo!==tempo))fail('途中のテンポ変更があるため安全のため変換を停止しました');if(children(root,'part').length!==1)fail('楽器が複数あります');return {events,tempo,duration:clock,measures:measures.length,warnings:[...new Set(warnings)]}}
+if(ties.size)fail('終了していないタイがあります');if(staves<2)fail('左右2段の楽譜ではありません');let tempo=tempos[0]?.tempo??120;if(tempos.some(t=>t.tempo!==tempo))fail('途中のテンポ変更があるため安全のため変換を停止しました');if(children(root,'part').length!==1)fail('楽器が複数あります');return {events,dynamics,tempo,duration:clock,measures:measures.length,warnings:[...new Set(warnings)]}}
 // 3072 ticks per quarter note: exact triplet durations (12/24/48) are integers.
 // All emitted units align to the 16-tick grid used by the quantizer.
 const lengths=[];
@@ -38,14 +46,14 @@ for(let den of [1,2,4,8,16,32,64,128,6,12,24,48,96])for(let dots=0;dots<=1;dots+
 }
 lengths.sort((a,b)=>b.ticks-a.ticks);
 function durationTokens(n){let arr=[];while(n>0){let unit=lengths.find(x=>x.ticks<=n);if(!unit)fail('丸めた音長をMMLで表現できません');arr.push(unit.text);n-=unit.ticks;if(arr.length>100000)fail('音長の分割が多すぎます')}return arr}
-function render(events,tempo,total){
+function render(events,tempo,total,dynamics=[],bias=0,defaultVolume=9){
  const scale=3072, quantum=16, q=n=>Math.round(n*scale/quantum)*quantum, maxError=quantum/(2*scale);
  let adjustments=0, largest=0;
  for(let e of events){let d=Math.max(Math.abs(q(e.start)/scale-e.start),Math.abs(q(e.end)/scale-e.end));if(d>1e-9)adjustments++;largest=Math.max(largest,d);if(q(e.end)<=q(e.start))fail('丸めると長さ0になる音符があります。短すぎる音は変換できません');}
- const endTick=q(total),boundaries=[...new Set([0,endTick,...events.flatMap(e=>[q(e.start),q(e.end)])])].sort((a,b)=>a-b);
- let out='t'+tempo+'o4',oct=4,count=0;
+ const endTick=q(total),boundaries=[...new Set([0,endTick,...events.flatMap(e=>[q(e.start),q(e.end)]),...dynamics.map(d=>q(d.at))])].filter(t=>t>=0&&t<=endTick).sort((a,b)=>a-b);
+ let out='t'+tempo+'o4v'+defaultVolume,oct=4,count=0,volume=defaultVolume;let changes=dynamics.map(d=>({at:q(d.at),volume:Math.max(0,Math.min(15,d.value+bias))})).sort((a,b)=>a.at-b.at),ci=0;
  for(let i=0;i<boundaries.length-1;i++){
-   let a=boundaries[i],b=boundaries[i+1];if(a===b)continue;
+   let a=boundaries[i],b=boundaries[i+1];if(a===b)continue;while(ci<changes.length&&changes[ci].at<=a){let next=changes[ci++].volume;if(next!==volume){out+='v'+next;volume=next}}
    let active=events.filter(e=>q(e.start)<=a&&q(e.end)>a).sort((x,y)=>x.pitch-y.pitch);
    let lens=durationTokens(b-a);
    for(let li=0;li<lens.length;li++){
@@ -69,7 +77,7 @@ function verifyMML(mml, source, total){
  let i=0;
  function lengthAt(){let m=/^(\d+)(\.*)/.exec(mml.slice(i));if(!m)return 4*scale/defaultLen; i+=m[0].length;let n=+m[1];if(!n)fail('MMLの音長が不正');let d=4*scale/n;for(let k=1;k<=m[2].length;k++)d+=4*scale/n/2**k;return d}
  while(i<mml.length){
-  if(mml[i]==='t'){i++;while(/\d/.test(mml[i]||''))i++;continue}
+  if(mml[i]==='t'||mml[i]==='v'){i++;while(/\d/.test(mml[i]||''))i++;continue}
   if(mml[i]==='o'){i++;let m=/^\d+/.exec(mml.slice(i));if(!m)fail('oの指定が不正');octave=+m[0];i+=m[0].length;continue}
   if(mml[i]==='l'){i++;let m=/^\d+/.exec(mml.slice(i));if(!m)fail('lの指定が不正');defaultLen=+m[0];i+=m[0].length;continue}
   let chord=[], duration=0;
@@ -107,8 +115,8 @@ function verifyMML(mml, source, total){
  return {notes:actual.length,beats:pos/scale};
 }
 
-let last={};$('convert').onclick=async()=>{$('combined').value='';$('copyMessage').textContent='';for(let side of ['A','B']){$('out'+side).value='';$('count'+side).textContent=''}let file=$('file').files[0];if(!file){$('status').textContent='MusicXMLファイルを選択してください';return}try{let score=parse(await file.text()),a=render(score.events[1],score.tempo,score.duration),b=render(score.events[2],score.tempo,score.duration);let verified={};let warnings=[];for(let [id,result] of [['A',a],['B',b]]){let safe=result.count<=3000;if(safe){try{verified[id]=verifyMML(result.text,score.events[id==='A'?1:2],score.duration)}catch(err){safe=false;warnings.push('Track '+id+' 自動照合NG：'+err.message)}}$('count'+id).textContent=result.count+'/3000音'+(safe?'':'（上限超過）');$('out'+id).value=safe?result.text:'';if(result.count>3000)warnings.push('Track '+id+' は3000音を超えたため出力しません');last[id]=safe?result.text:''}
-$('combined').value=($('outA').value&&$('outB').value)?'Track A（右手）\n'+$('outA').value+'\n\nTrack B（左手）\n'+$('outB').value:'';$('status').className=warnings.length?'warning':'ok';$('status').textContent=score.measures+'小節 / テンポ '+score.tempo+' / 右手 '+a.count+'音 / 左手 '+b.count+'音\n'+(warnings.length?warnings.join('\n'):'3000音上限チェック・音程/発音時刻の自動照合：両トラック合格')+'\n連符対応（12/24/48）・丸め：右手 '+a.adjustments+'音、左手 '+b.adjustments+'音（最大 '+Math.max(a.largest,b.largest).toFixed(6)+'拍）'+(a.adjustments+b.adjustments?'\n※元の音長・タイミングを厳密には維持できていません。ゲームで要確認。':'')+(score.warnings.length?'\n注意：'+score.warnings.slice(0,8).join('、'):'')+'\n※ゲーム内で再生確認してください。';}catch(e){$('status').className='error';$('status').textContent='変換停止：'+e.message+'\n元ファイルは変更していません。'}};
+let last={};$('convert').onclick=async()=>{$('combined').value='';$('copyMessage').textContent='';for(let side of ['A','B']){$('out'+side).value='';$('count'+side).textContent=''}let file=$('file').files[0];if(!file){$('status').textContent='MusicXMLファイルを選択してください';return}try{let score=parse(await file.text());let leftOwn=score.dynamics[2].slice().sort((a,b)=>a.at-b.at);let firstLeft=leftOwn.length?leftOwn[0].at:Infinity;let leftDynamics=[...score.dynamics[1].filter(d=>d.at<firstLeft),...leftOwn];let a=render(score.events[1],score.tempo,score.duration,score.dynamics[1],0,11),b=render(score.events[2],score.tempo,score.duration,leftDynamics,-2,9);let verified={};let warnings=[];for(let [id,result] of [['A',a],['B',b]]){let safe=result.count<=3000;if(safe){try{verified[id]=verifyMML(result.text,score.events[id==='A'?1:2],score.duration)}catch(err){safe=false;warnings.push('Track '+id+' 自動照合NG：'+err.message)}}$('count'+id).textContent=result.count+'/3000音'+(safe?'':'（上限超過）');$('out'+id).value=safe?result.text:'';if(result.count>3000)warnings.push('Track '+id+' は3000音を超えたため出力しません');last[id]=safe?result.text:''}
+$('combined').value=($('outA').value&&$('outB').value)?'Track A（右手）\n'+$('outA').value+'\n\nTrack B（左手）\n'+$('outB').value:'';$('status').className=warnings.length?'warning':'ok';$('status').textContent=score.measures+'小節 / テンポ '+score.tempo+' / 右手 '+a.count+'音 / 左手 '+b.count+'音\n'+(warnings.length?warnings.join('\n'):'3000音上限チェック・音程/発音時刻の自動照合：両トラック合格')+'\n連符対応（12/24/48）・強弱記号対応（右手基準・左手-2、初期A v11 / B v9、左手に独立した強弱があれば以後優先）・丸め：右手 '+a.adjustments+'音、左手 '+b.adjustments+'音（最大 '+Math.max(a.largest,b.largest).toFixed(6)+'拍）'+(a.adjustments+b.adjustments?'\n※元の音長・タイミングを厳密には維持できていません。ゲームで要確認。':'')+(score.warnings.length?'\n注意：'+score.warnings.slice(0,8).join('、'):'')+'\n※ゲーム内で再生確認してください。';}catch(e){$('status').className='error';$('status').textContent='変換停止：'+e.message+'\n元ファイルは変更していません。'}};
 async function copyText(v,area){try{await navigator.clipboard.writeText(v);return true}catch(e){area.focus();area.select();return document.execCommand('copy')}}
 $('copyBoth').onclick=async()=>{const v=$('combined').value;if(!v){$('copyMessage').textContent='A・B両方の変換が成功してからコピーしてください。';return}let ok=await copyText(v,$('combined'));$('copyMessage').textContent=ok?'A・Bをまとめてコピーしました。':'コピーできませんでした。下の欄を選択して手動コピーしてください。'};
 $('saveBoth').onclick=()=>{const v=$('combined').value;if(!v){$('copyMessage').textContent='A・B両方の変換が成功してから保存してください。';return}let blob=new Blob([v],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='tracks_A_B.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
